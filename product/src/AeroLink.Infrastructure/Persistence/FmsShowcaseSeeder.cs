@@ -72,6 +72,17 @@ public sealed class FmsShowcaseSeeder(AeroLinkDbContext db)
         procedures.AddRange(BuildProcedures(project.Id, llrs.Select(x => x.Revision.Id).ToList(), 280, TestProcedureLevel.LowLevel, "LLRTP", start.AddDays(156)));
         db.TestProcedures.AddRange(procedures.Select(x => x.Procedure)); db.TestProcedureRevisions.AddRange(procedures.Select(x => x.Revision));
         db.TestCoverage.AddRange(procedures.SelectMany(x => x.Requirements.Select(req => new TestRequirementCoverage(x.Revision.Id, req)))); await db.SaveChangesAsync(ct);
+        // This fresh showcase is created after exact procedure manifests exist, so record Build 1.5's
+        // configuration before any Build 1.6 draft revision is introduced. Existing historical databases are
+        // deliberately not backfilled by an upgrade step: inferring an unrecorded manifest would fabricate
+        // controlled history.
+        db.BaselineTestProcedures.AddRange(procedures.Select(x =>
+            new BaselineTestProcedureSelection(baseline15.Id, x.Procedure.Id, x.Revision.Id)));
+        var procedureManifest = string.Join(";", procedures.OrderBy(x => x.Procedure.BaseNumber)
+            .Select(x => $"{x.Procedure.BaseNumber}.{x.Revision.Revision:D2}:{x.Revision.Id}"));
+        baseline15.MarkTestProceduresMaterialized("cm.fms", Hash(procedureManifest), procedures.Count,
+            start.AddDays(158));
+        await db.SaveChangesAsync(ct);
         var executionNumber = 0;
         foreach (var item in procedures)
         {

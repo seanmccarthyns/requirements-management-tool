@@ -342,7 +342,7 @@ export default function RequirementsWorkspace({
     const [a, b, c] = await Promise.all([
       fetch(`${api}/api/enterprise-requirements/${item.id}${release?.id ? `?releaseId=${release.id}` : ""}`),
       fetch(`${api}/api/enterprise-requirements/${item.id}/comments`),
-      fetch(`${api}/api/enterprise-requirements/${item.id}/impact`),
+      fetch(`${api}/api/enterprise-requirements/${item.id}/impact${release?.id ? `?releaseId=${release.id}` : ""}`),
     ]);
     if (a.ok) setDetail(await a.json());
     if (b.ok) setComments(await b.json());
@@ -369,7 +369,7 @@ export default function RequirementsWorkspace({
         fetch(
           `${api}/api/enterprise-requirements/${initialArtifactId}/comments`,
         ),
-        fetch(`${api}/api/enterprise-requirements/${initialArtifactId}/impact`),
+        fetch(`${api}/api/enterprise-requirements/${initialArtifactId}/impact${release?.id ? `?releaseId=${release.id}` : ""}`),
       ]);
       if (!detailResponse.ok) return;
       const value: Detail = await detailResponse.json();

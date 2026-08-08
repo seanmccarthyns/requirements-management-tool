@@ -176,7 +176,8 @@ export default function TestProcedureExplorer({ api, projectId, releaseId, disci
     let active = true
     void (async () => {
       try {
-        const response = await fetch(`${api}/api/test-procedures/${selected.id}/history?releaseId=${releaseId}`)
+        const response = await fetch(
+          `${api}/api/test-procedures/${selected.id}/history?releaseId=${releaseId}&revisionId=${selected.revisionId}`)
         if (response.ok && active) setHistory(await response.json())
       } catch { if (active) setHistory(undefined) }
     })()
@@ -259,7 +260,21 @@ export default function TestProcedureExplorer({ api, projectId, releaseId, disci
   const uncovered = coverage?.items.filter(x => x.disposition === 'Uncovered') ?? []
   const suspect = coverage?.items.filter(x => x.disposition === 'Suspect') ?? []
 
-  const open = (procedure: Procedure) => { setSelectedId(procedure.id); setTab('details'); setHistory(undefined) }
+  const open = (procedure: Procedure) => {
+    setSelectedId(procedure.id); setTab('details'); setHistory(undefined)
+    const params = new URLSearchParams(location.search)
+    params.set('procedure', procedure.displayNumber)
+    params.set('procedureId', procedure.id)
+    params.set('procedureRevisionId', procedure.revisionId)
+    window.history.replaceState({}, '', `${location.pathname}?${params}`)
+  }
+  const close = () => {
+    setSelectedId('')
+    const params = new URLSearchParams(location.search)
+    params.delete('procedureId')
+    params.delete('procedureRevisionId')
+    window.history.replaceState({}, '', `${location.pathname}${params.size ? `?${params}` : ''}`)
+  }
 
   // A workspace is its own <main>: the shell supplies the navigation and context bar, not the landmark.
   return <main className="procedureExplorer">
@@ -421,7 +436,7 @@ export default function TestProcedureExplorer({ api, projectId, releaseId, disci
               <b>{selected.displayNumber}</b>
               <span>{selected.title}</span>
             </div>
-            <button type="button" className="inspectorClose" onClick={() => setSelectedId('')}
+            <button type="button" className="inspectorClose" onClick={close}
               aria-label="Close procedure detail">×</button>
           </div>
           <div className="inspectorTabs">

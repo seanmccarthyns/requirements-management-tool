@@ -44,8 +44,9 @@ public sealed class ReleaseReadinessService(AeroLinkDbContext db)
         // The predicate itself lives in VerificationCoverageProjection so the requirements workspace filter
         // reads the same definition. Two implementations of "covered" is how a workspace comes to disagree
         // with the gate it is meant to be preparing for.
-        var coverage = await db.TestCoverage.AsNoTracking().Where(x => revisionIds.Contains(x.RequirementRevisionId)).ToListAsync(ct);
-        var coveredIds = await VerificationCoverageProjection.SettledCoveredAsync(db, revisionIds, ct);
+        var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baseline.Id, ct);
+        var coveredIds = await VerificationCoverageProjection.SettledCoveredAsync(db, revisionIds, ct,
+            procedureEffectivity?.RevisionIds, buildScoped: false);
         var docs = await db.ControlledDocuments.AsNoTracking().Where(x => x.BaselineId == baseline.Id).ToListAsync(ct);
         // A release cannot be declared ready while an unwaived controlled problem report remains a blocker.
         // This is deliberately project-scoped until product-line configuration provides exact release applicability.

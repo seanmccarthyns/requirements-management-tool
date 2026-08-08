@@ -19,7 +19,9 @@ public sealed class ControlledOutputGenerator(AeroLinkDbContext db, RichContentP
         var project=await db.Projects.AsNoTracking().SingleAsync(x=>x.Id==baseline.ProjectId,ct);var program=await db.Programs.AsNoTracking().SingleAsync(x=>x.Id==project.ProgramId,ct);var release=await db.Releases.AsNoTracking().SingleAsync(x=>x.Id==baseline.ReleaseId,ct);
         var requirements=await(from member in db.BaselineRequirements.AsNoTracking().Where(x=>x.BaselineId==baselineId) join artifact in db.Requirements.AsNoTracking() on member.ArtifactId equals artifact.Id join revision in db.RequirementRevisions.AsNoTracking() on member.RevisionId equals revision.Id orderby artifact.Level,artifact.BaseNumber select new{revision.Id,display=artifact.BaseNumber+"."+revision.Revision.ToString("D2"),level=artifact.Level.ToString(),revision.Statement}).ToListAsync(ct);
         var ids=requirements.Select(x=>x.Id).ToList();var links=await db.RequirementTraces.AsNoTracking().Where(x=>ids.Contains(x.SourceRevisionId)||ids.Contains(x.TargetRevisionId)).ToListAsync(ct);var byId=requirements.ToDictionary(x=>x.Id);
-        var coverage=await(from link in db.TestCoverage.AsNoTracking().Where(x=>ids.Contains(x.RequirementRevisionId)) join revision in db.TestProcedureRevisions.AsNoTracking() on link.ProcedureRevisionId equals revision.Id join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id select new{link.RequirementRevisionId,display=procedure.BaseNumber+"."+revision.Revision.ToString("D2"),procedure.Title}).ToListAsync(ct);
+        var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baselineId, ct);
+        var effectiveProcedureRevisionIds = procedureEffectivity?.RevisionIds ?? [];
+        var coverage=await(from link in db.TestCoverage.AsNoTracking().Where(x=>ids.Contains(x.RequirementRevisionId)&&effectiveProcedureRevisionIds.Contains(x.ProcedureRevisionId)) join revision in db.TestProcedureRevisions.AsNoTracking() on link.ProcedureRevisionId equals revision.Id join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id select new{link.RequirementRevisionId,display=procedure.BaseNumber+"."+revision.Revision.ToString("D2"),procedure.Title}).ToListAsync(ct);
         var records=requirements.Select(req=>{var parents=links.Where(x=>x.SourceRevisionId==req.Id&&byId.ContainsKey(x.TargetRevisionId)).Select(x=>byId[x.TargetRevisionId].display).ToList();var children=links.Where(x=>x.TargetRevisionId==req.Id&&byId.ContainsKey(x.SourceRevisionId)).Select(x=>byId[x.SourceRevisionId].display).ToList();var tests=coverage.Where(x=>x.RequirementRevisionId==req.Id).Select(x=>$"{x.display} - {x.Title}").ToList();return new PublicationRecord(req.display,req.level,"Full lifecycle linkage",req.Statement,new[]{("Parent requirement revisions",parents.Count==0?"Top-level / none":string.Join("; ",parents)),("Child requirement revisions",children.Count==0?"Leaf-level / none":string.Join("; ",children)),("Verification procedure revisions",tests.Count==0?"Coverage gap - none recorded":string.Join("; ",tests))});}).ToList();
         var generatedAt=DateTimeOffset.UtcNow;var approvals=await ApprovalBasis(baselineId,release.Id,generatedAt,ct);var hash=baseline.RequirementsHash??baseline.ContentHash??new string('0',64);var status=release.IsReleased?"Approved and Released":"Controlled Draft";
         var createdBy=(await db.BaselineEvents.AsNoTracking().Where(x=>x.BaselineId==baseline.Id&&x.EventType=="CandidateBaselineCreated").ToListAsync(ct)).OrderBy(x=>x.OccurredAt).Select(x=>x.ActorId).FirstOrDefault()??"system";
@@ -36,9 +38,9 @@ public sealed class ControlledOutputGenerator(AeroLinkDbContext db, RichContentP
             ControlledDocumentType.Sysrd => await RequirementPublicationRows(document.BaselineId, RequirementLevel.System, ct),
             ControlledDocumentType.SwrdHighLevel => await RequirementPublicationRows(document.BaselineId, RequirementLevel.HighLevel, ct),
             ControlledDocumentType.SwrdLowLevel => await RequirementPublicationRows(document.BaselineId, RequirementLevel.LowLevel, ct),
-            ControlledDocumentType.SystemTestProcedures => await ProcedurePublicationRows(document.ProjectId, TestProcedureLevel.System, document.GeneratedAt, ct),
-            ControlledDocumentType.HighLevelTestProcedures => await ProcedurePublicationRows(document.ProjectId, TestProcedureLevel.HighLevel, document.GeneratedAt, ct),
-            _ => await ProcedurePublicationRows(document.ProjectId, TestProcedureLevel.LowLevel, document.GeneratedAt, ct)
+            ControlledDocumentType.SystemTestProcedures => await ProcedurePublicationRows(document.BaselineId, TestProcedureLevel.System, ct),
+            ControlledDocumentType.HighLevelTestProcedures => await ProcedurePublicationRows(document.BaselineId, TestProcedureLevel.HighLevel, ct),
+            _ => await ProcedurePublicationRows(document.BaselineId, TestProcedureLevel.LowLevel, ct)
         };
         var approvals = await ApprovalBasis(document.BaselineId, document.ReleaseId, document.GeneratedAt, ct); var createdBy = (await db.BaselineEvents.AsNoTracking().Where(x => x.BaselineId == baseline.Id && x.EventType == "CandidateBaselineCreated").ToListAsync(ct)).OrderBy(x => x.OccurredAt).Select(x => x.ActorId).FirstOrDefault() ?? "system";
         var releasedWhenGenerated = release.IsReleased && (release.ReleasedAt is null || release.ReleasedAt <= document.GeneratedAt);
@@ -112,6 +114,7 @@ public sealed class ControlledOutputGenerator(AeroLinkDbContext db, RichContentP
         var publication = new ProfessionalPublication(project.SoftwareProduct, program.Name + " (" + program.Code + ")", project.Name, type, title,
             subtitle, document.DocumentNumber, document.Revision.ToString("D2"), status, release.Version, baseline.DisplayNumber, createdBy, document.GeneratedAt, document.ContentHash,
             [("Controlled records", records.Count.ToString("N0")), ("Baseline content hash", baseline.ContentHash ?? "Not frozen"), ("Requirement manifest hash", baseline.RequirementsHash ?? "Not materialized"),
+             ("Test procedure manifest hash", baseline.TestProceduresHash ?? "Legacy baseline - no exact procedure manifest recorded"),
              // Named in the front matter so a reader can tell which layout produced what they are holding.
              ("Document template", templateRevision is null ? "Built-in layout" : $"{templateName} revision {templateRevision.Revision} (approved {templateRevision.ApprovedAt.UtcDateTime:yyyy-MM-dd} by {templateRevision.ApprovedBy}, manifest {templateRevision.ManifestHash[..Math.Min(12, templateRevision.ManifestHash.Length)]})"),
              ("Approval basis", "Named approvers from exact approved change requests and completed release approvals recorded by generation time")], approvals,
@@ -166,7 +169,10 @@ public sealed class ControlledOutputGenerator(AeroLinkDbContext db, RichContentP
                              orderby artifact.BaseNumber
                              select new { revision.Id, display = artifact.BaseNumber + "." + revision.Revision.ToString("D2"), revision.VerificationMethod }).ToListAsync(ct);
         var ids = sources.Select(x => x.Id).ToList();
-        var coverage = await (from link in db.TestCoverage.AsNoTracking().Where(x => ids.Contains(x.RequirementRevisionId))
+        var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baselineId, ct);
+        var effectiveProcedureRevisionIds = procedureEffectivity?.RevisionIds ?? [];
+        var coverage = await (from link in db.TestCoverage.AsNoTracking().Where(x => ids.Contains(x.RequirementRevisionId)
+                                  && effectiveProcedureRevisionIds.Contains(x.ProcedureRevisionId))
                               join revision in db.TestProcedureRevisions.AsNoTracking() on link.ProcedureRevisionId equals revision.Id
                               join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id
                               select new { link.RequirementRevisionId, link.IsSuspect, display = procedure.BaseNumber + "." + revision.Revision.ToString("D2"), procedure.Title }).ToListAsync(ct);
@@ -183,13 +189,16 @@ public sealed class ControlledOutputGenerator(AeroLinkDbContext db, RichContentP
         }).ToList();
     }
 
-    private async Task<List<PublicationRecord>> ProcedurePublicationRows(Guid projectId, TestProcedureLevel level, DateTimeOffset generatedAt, CancellationToken ct)
+    private async Task<List<PublicationRecord>> ProcedurePublicationRows(Guid baselineId, TestProcedureLevel level, CancellationToken ct)
     {
-        var rows = await (from procedure in db.TestProcedures.AsNoTracking().Where(x => x.ProjectId == projectId && x.Level == level)
-                          join revision in db.TestProcedureRevisions.AsNoTracking().Where(x => x.State == TestProcedureState.Approved) on procedure.Id equals revision.ProcedureId
-                          orderby procedure.BaseNumber, revision.Revision descending
-                          select new { procedure.Id, procedure.BaseNumber, procedure.Title, ProcedureCreatedAt = procedure.CreatedAt, revision.Revision, revision.State, revision.Objective, revision.Preconditions, revision.Steps, revision.ExpectedResult, revision.AuthorId, RevisionCreatedAt = revision.CreatedAt }).ToListAsync(ct);
-        return rows.Where(x => x.ProcedureCreatedAt <= generatedAt && x.RevisionCreatedAt <= generatedAt).GroupBy(x => x.Id).Select(x => x.First()).OrderBy(x => x.BaseNumber)
+        var effectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baselineId, ct);
+        var revisionIds = effectivity?.RevisionIds ?? [];
+        var rows = await (from revision in db.TestProcedureRevisions.AsNoTracking().Where(x => revisionIds.Contains(x.Id))
+                          join procedure in db.TestProcedures.AsNoTracking().Where(x => x.Level == level)
+                              on revision.ProcedureId equals procedure.Id
+                          orderby procedure.BaseNumber
+                          select new { procedure.Id, procedure.BaseNumber, procedure.Title, revision.Revision, revision.State, revision.Objective, revision.Preconditions, revision.Steps, revision.ExpectedResult, revision.AuthorId }).ToListAsync(ct);
+        return rows.OrderBy(x => x.BaseNumber)
             .Select(x => new PublicationRecord(x.BaseNumber + "." + x.Revision.ToString("D2"), level + " Test Procedure", x.Title, x.Objective, new[] { ("State", x.State.ToString()), ("Author / owner", x.AuthorId), ("Preconditions", x.Preconditions), ("Procedure steps", x.Steps), ("Expected result", x.ExpectedResult) })).ToList();
     }
     private async Task<List<PublicationApproval>> ApprovalBasis(Guid baselineId, Guid releaseId, DateTimeOffset generatedAt, CancellationToken ct)

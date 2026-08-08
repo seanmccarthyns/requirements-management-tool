@@ -96,6 +96,8 @@ public static class VerificationEndpoints
             if (baselineId is null) return Results.Ok(new { page, pageSize, totalCount = 0, items = Array.Empty<object>() });
             if (!await db.CandidateBaselines.AsNoTracking().AnyAsync(x => x.Id == baselineId && x.ProjectId == projectId, ct))
                 return Results.BadRequest(new { error = "The selected baseline does not belong to this Project.", code = "baseline_project_mismatch" });
+            var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baselineId.Value, ct);
+            var effectiveProcedureRevisionIds = procedureEffectivity?.RevisionIds ?? [];
             var source = from member in db.BaselineRequirements.AsNoTracking().Where(x => x.BaselineId == baselineId)
                          join artifact in db.Requirements.AsNoTracking() on member.ArtifactId equals artifact.Id
                          join revision in db.RequirementRevisions.AsNoTracking() on member.RevisionId equals revision.Id
@@ -105,7 +107,8 @@ public static class VerificationEndpoints
             var selectedIds = selected.Select(x => x.revision.Id).ToList(); var links = await db.RequirementTraces.AsNoTracking().Where(x => selectedIds.Contains(x.SourceRevisionId) || selectedIds.Contains(x.TargetRevisionId)).ToListAsync(ct);
             var relatedIds = links.SelectMany(x => new[] { x.SourceRevisionId, x.TargetRevisionId }).Distinct().ToList();
             var related = await (from revision in db.RequirementRevisions.AsNoTracking().Where(x => relatedIds.Contains(x.Id)) join artifact in db.Requirements.AsNoTracking() on revision.ArtifactId equals artifact.Id select new { revision.Id, artifact.BaseNumber, revision.Revision, level = artifact.Level.ToString() }).ToDictionaryAsync(x => x.Id, ct);
-            var coverage = await VerificationCoverageProjection.ForRequirementRevisionsAsync(db,selectedIds,ct);
+            var coverage = await VerificationCoverageProjection.ForRequirementRevisionsAsync(db, selectedIds, ct,
+                buildScoped: true, effectiveProcedureRevisionIds: effectiveProcedureRevisionIds);
             var procedureRevisionIds=coverage.Select(x=>x.ProcedureRevisionId).Distinct().ToList();
             var executionQuery=db.TestExecutions.AsNoTracking().Where(x=>procedureRevisionIds.Contains(x.ProcedureRevisionId));
             var executions=await(db.Database.IsSqlite()?executionQuery.OrderByDescending(x=>x.Id):executionQuery.OrderByDescending(x=>x.ExecutedAt)).ToListAsync(ct);
@@ -375,15 +378,16 @@ public static class VerificationEndpoints
                 .OrderByDescending(x => x.Revision).ToList();
             var revisionIds = revisions.Select(x => x.Id).ToList();
             if (revisionId is not null && !revisionIds.Contains(revisionId.Value)) return Results.NotFound();
-            if (releaseId is not null && revisionId is not null)
+            Guid? effectiveRevisionId = null;
+            if (releaseId is not null)
             {
-                var effectiveBaselineId = await BuildScope.EffectiveBaselineAsync(db, procedure.ProjectId, releaseId.Value, ct);
-                if (effectiveBaselineId is null) return Results.NotFound();
-                var belongsToBuild = await db.TestCoverage.AsNoTracking().AnyAsync(link =>
-                    link.ProcedureRevisionId == revisionId
-                    && db.BaselineRequirements.AsNoTracking().Any(member =>
-                        member.BaselineId == effectiveBaselineId && member.RevisionId == link.RequirementRevisionId), ct);
-                if (!belongsToBuild) return Results.NotFound();
+                var effectivity = await TestProcedureEffectivity.ForReleaseAsync(db, procedure.ProjectId, releaseId.Value, ct);
+                if (effectivity is not null && effectivity.RevisionByProcedure.TryGetValue(id, out var carriedRevisionId))
+                    effectiveRevisionId = carriedRevisionId;
+                // A request for one exact revision is a build-effectivity assertion and must match the
+                // manifest. Omitting revisionId is the broad historical view: legacy and draft procedures
+                // remain readable there even when no build ever carried them.
+                if (revisionId is not null && revisionId != effectiveRevisionId) return Results.NotFound();
             }
 
             // What each revision answered for: the verification decision that resolved to it, the package
@@ -415,7 +419,7 @@ public static class VerificationEndpoints
                 level = procedure.Level.ToString(),
                 procedure.OwnerId,
                 procedure.CreatedAt,
-                selectedRevisionId = revisionId,
+                selectedRevisionId = revisionId ?? effectiveRevisionId,
                 revisions = revisions.Select(revision => new
                 {
                     revision.Id,
@@ -453,16 +457,9 @@ public static class VerificationEndpoints
             Dictionary<Guid, Guid>? scopedRevisions = null;
             if(releaseId is not null)
             {
-                var effectiveBaselineId=await BuildScope.EffectiveBaselineAsync(db,projectId,releaseId.Value,ct);
-                if(effectiveBaselineId is null)return Results.Ok(new{page=currentPage,pageSize=size,totalCount=0,totalPages=0,items=Array.Empty<object>()});
-                var effectiveRows = await (from coverageLink in db.TestCoverage.AsNoTracking()
-                                           join member in db.BaselineRequirements.AsNoTracking().Where(x => x.BaselineId == effectiveBaselineId) on coverageLink.RequirementRevisionId equals member.RevisionId
-                                           join revision in db.TestProcedureRevisions.AsNoTracking() on coverageLink.ProcedureRevisionId equals revision.Id
-                                           join procedure in db.TestProcedures.AsNoTracking().Where(x => x.ProjectId == projectId) on revision.ProcedureId equals procedure.Id
-                                           select new { procedure.Id, RevisionId = revision.Id, revision.Revision }).ToListAsync(ct);
-                scopedRevisions = effectiveRows.GroupBy(x => x.Id).ToDictionary(
-                    group => group.Key,
-                    group => group.OrderByDescending(x => x.Revision).First().RevisionId);
+                var effectivity = await TestProcedureEffectivity.ForReleaseAsync(db, projectId, releaseId.Value, ct);
+                if(effectivity is null)return Results.Ok(new{page=currentPage,pageSize=size,totalCount=0,totalPages=0,items=Array.Empty<object>()});
+                scopedRevisions = effectivity.RevisionByProcedure.ToDictionary(x => x.Key, x => x.Value);
                 var effectiveProcedureIds = scopedRevisions.Keys.ToList();
                 source=source.Where(x=>effectiveProcedureIds.Contains(x.Id));
             }
@@ -475,8 +472,18 @@ public static class VerificationEndpoints
                 var q = search.Trim().ToLower();
                 // Deep links use the controlled display number, including its revision suffix, while the
                 // procedure owns only the base number. Let either form find the same controlled procedure.
-                var baseQuery = q.Length > 3 && q[^3] == '.' && int.TryParse(q[^2..], out _) ? q[..^3] : q;
+                var requestedRevision = -1;
+                var hasRevision = q.Length > 3 && q[^3] == '.' && int.TryParse(q[^2..], out requestedRevision);
+                var baseQuery = hasRevision ? q[..^3] : q;
                 source = source.Where(x => x.BaseNumber.ToLower().Contains(baseQuery) || x.Title.ToLower().Contains(q));
+                if (hasRevision && scopedRevisions is not null)
+                {
+                    var scopedRevisionIds = scopedRevisions.Values.ToList();
+                    var matchingProcedureIds = await db.TestProcedureRevisions.AsNoTracking()
+                        .Where(x => scopedRevisionIds.Contains(x.Id) && x.Revision == requestedRevision)
+                        .Select(x => x.ProcedureId).ToListAsync(ct);
+                    source = source.Where(x => matchingProcedureIds.Contains(x.Id));
+                }
             }
             if (!string.IsNullOrWhiteSpace(owner)) { var o = owner.Trim().ToLower(); source = source.Where(x => x.OwnerId.ToLower() == o); }
             // Lifecycle state belongs to the current revision, so the predicate names it rather than matching
@@ -669,7 +676,9 @@ public static class VerificationEndpoints
                                       join revision in db.RequirementRevisions.AsNoTracking() on member.RevisionId equals revision.Id
                                       orderby artifact.BaseNumber select new { artifact.Id, revisionId = revision.Id, displayNumber = artifact.BaseNumber + "." + (revision.Revision < 10 ? "0" : "") + revision.Revision, revision.Statement }).ToListAsync(ct);
             var requirementIds = requirements.Select(x => x.revisionId).ToList();
-            var coverageLinks = await VerificationCoverageProjection.ForRequirementRevisionsAsync(db, requirementIds, ct, buildScoped: true);
+            var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, baselineId.Value, ct);
+            var coverageLinks = await VerificationCoverageProjection.ForRequirementRevisionsAsync(db, requirementIds, ct,
+                buildScoped: true, effectiveProcedureRevisionIds: procedureEffectivity?.RevisionIds ?? []);
             var procedureRevisionIds = coverageLinks.Select(x => x.ProcedureRevisionId).Distinct().ToList();
             var executions = await db.TestExecutions.AsNoTracking().Where(x => procedureRevisionIds.Contains(x.ProcedureRevisionId) && (buildId == null || x.SoftwareBuildId == buildId)).ToListAsync(ct);
             var items = requirements.Select(req =>

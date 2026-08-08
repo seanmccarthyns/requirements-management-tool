@@ -124,15 +124,15 @@ public sealed class DraftDocumentGenerator(AeroLinkDbContext db, RichContentPubl
             ControlledDocumentType.HighLevelTestProcedures => TestProcedureLevel.HighLevel,
             _ => TestProcedureLevel.LowLevel
         };
-        var rows = await (from procedure in db.TestProcedures.AsNoTracking()
-                          where procedure.ProjectId == project.Id && procedure.Level == level
-                          join revision in db.TestProcedureRevisions.AsNoTracking()
-                              on procedure.Id equals revision.ProcedureId
-                          select new { Procedure = procedure, Revision = revision }).ToListAsync(ct);
-        var latest = rows.GroupBy(x => x.Procedure.Id)
-            .Select(x => x.OrderByDescending(row => row.Revision.Revision).First())
-            .OrderBy(x => x.Procedure.BaseNumber, StringComparer.Ordinal)
-            .ToList();
+        var effectivity = await TestProcedureEffectivity.ForReleaseAsync(db, project.Id, release.Id, ct);
+        var revisionIds = effectivity?.RevisionIds ?? [];
+        var latest = await (from revision in db.TestProcedureRevisions.AsNoTracking()
+                                .Where(x => revisionIds.Contains(x.Id))
+                            join procedure in db.TestProcedures.AsNoTracking()
+                                .Where(x => x.ProjectId == project.Id && x.Level == level)
+                                on revision.ProcedureId equals procedure.Id
+                            orderby procedure.BaseNumber
+                            select new { Procedure = procedure, Revision = revision }).ToListAsync(ct);
         var records = latest.Select(x => new PublicationRecord(
             $"{x.Procedure.BaseNumber}.{x.Revision.Revision:D2}",
             $"{level} · {x.Revision.State}",
@@ -167,7 +167,9 @@ public sealed class DraftDocumentGenerator(AeroLinkDbContext db, RichContentPubl
             new[]
             {
                 new PublicationSection("Effective Test Procedures",
-                    "Latest controlled revision of each procedure, including procedure changes still moving through review.",
+                    effectivity?.IsExactManifest == true
+                        ? "Exact controlled procedure revisions carried by the effective build manifest."
+                        : "Approved compatibility projection for a predecessor created before procedure manifests existed.",
                     records)
             })
         {

@@ -167,12 +167,21 @@ test('released Build 1.5 procedures remain readable without create or edit actio
   await expect(page.getByRole('heading', { name: 'Test Procedure Explorer' })).toBeVisible({ timeout: 30_000 })
 
   await expect(page.getByRole('button', { name: /New test procedure/ })).toHaveCount(0)
-  await page.getByLabel('Find a procedure').fill('SYSTP-000001')
-  const row = page.locator('.procedureRow').filter({ hasText: 'SYSTP-000001' }).first()
+  // Build 1.6 carries a later draft of this stable procedure identity. The released Build 1.5 Explorer must
+  // keep its exact manifest revision primary, including after the selection becomes a reloadable deep link.
+  await page.getByLabel('Find a procedure').fill('SYSTP-000040')
+  const row = page.locator('.procedureRow').filter({ hasText: 'SYSTP-000040.00' }).first()
   await expect(row).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.procedureList')).not.toContainText('SYSTP-000040.01')
   await row.click()
   const inspector = page.locator('.requirementInspector')
   await expect(inspector).toBeVisible({ timeout: 30_000 })
+  await expect(inspector).toContainText('SYSTP-000040.00')
+  await expect(page).toHaveURL(/procedure=SYSTP-000040\.00.*procedureId=.*procedureRevisionId=/)
+  const exactUrl = page.url()
+  await page.reload()
+  await expect(page).toHaveURL(exactUrl)
+  await expect(page.locator('.requirementInspector')).toContainText('SYSTP-000040.00', { timeout: 30_000 })
   await expect(inspector).toContainText('Objective')
   await expect(page.getByRole('button', { name: 'Check out & edit' })).toHaveCount(0)
   // A released build is read-only, so its procedures cannot be discussed either.

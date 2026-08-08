@@ -189,8 +189,14 @@ public static class WorkspaceEndpoints
                 ? await db.Requirements.AsNoTracking().Where(x => x.ProjectId == projectId).Select(x => x.Id).ToListAsync(ct)
                 : await db.BaselineRequirements.AsNoTracking().Where(x => x.BaselineId == effectiveBaselineId).Select(x => x.ArtifactId).ToListAsync(ct);
             var requirements = db.Requirements.AsNoTracking().Where(x => artifactIds.Contains(x.Id));
-            var procedureRevisionIds = await db.TestCoverage.AsNoTracking().Where(x => revisionIds.Contains(x.RequirementRevisionId)).Select(x => x.ProcedureRevisionId).Distinct().ToListAsync(ct);
-            var procedureIds = await db.TestProcedureRevisions.AsNoTracking().Where(x => procedureRevisionIds.Contains(x.Id)).Select(x => x.ProcedureId).Distinct().ToListAsync(ct);
+            var procedureEffectivity = releaseId is null
+                ? null
+                : await TestProcedureEffectivity.ForReleaseAsync(db, projectId, releaseId.Value, ct);
+            var procedureIds = procedureEffectivity is not null
+                ? procedureEffectivity.ProcedureIds.ToList()
+                : await (from coverage in db.TestCoverage.AsNoTracking().Where(x => revisionIds.Contains(x.RequirementRevisionId))
+                         join procedureRevision in db.TestProcedureRevisions.AsNoTracking() on coverage.ProcedureRevisionId equals procedureRevision.Id
+                         select procedureRevision.ProcedureId).Distinct().ToListAsync(ct);
             var executionBuildIds = await db.SoftwareBuilds.AsNoTracking().Where(x => selectedReleaseIds.Contains(x.ReleaseId)).Select(x => x.Id).ToListAsync(ct);
             return Results.Ok(new {
                 releases = releases.Select(x => new { x.Id, x.Version, x.IsReleased }),

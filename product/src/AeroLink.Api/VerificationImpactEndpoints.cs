@@ -335,17 +335,23 @@ public static class VerificationImpactEndpoints
                                     where artifact.ProjectId == review.ProjectId && artifact.Level == wanted
                                     select new { revisionId = revision.Id, displayNumber = artifact.BaseNumber + "." + (revision.Revision < 10 ? "0" : "") + revision.Revision, revision.Statement })
                 .Distinct().ToListAsync(ct);
-            // The procedures a Modify or Retire may target, for the same reason.
-            var targets = await (from procedure in db.TestProcedures.AsNoTracking()
-                                 where procedure.ProjectId == review.ProjectId && procedure.Level == review.ProcedureLevel()
-                                 select new { procedure.Id, procedure.BaseNumber, procedure.Title })
-                .OrderBy(x => x.BaseNumber).Take(500).ToListAsync(ct);
-            var targetIds = targets.Select(x => x.Id).ToList();
-            var currentRevisions = await db.TestProcedureRevisions.AsNoTracking()
-                .Where(x => targetIds.Contains(x.ProcedureId))
-                .GroupBy(x => x.ProcedureId)
-                .Select(g => new { ProcedureId = g.Key, Revision = g.Max(x => x.Revision) })
-                .ToDictionaryAsync(x => x.ProcedureId, x => x.Revision, ct);
+            // Modify and Retire act on what this target build carries, not on the newest procedure revision
+            // anywhere in the Project. Coverage is not membership and a later build is not an authoring menu.
+            var effectivity = await TestProcedureEffectivity.ForReleaseAsync(
+                db, review.ProjectId, review.ReleaseId, ct);
+            var targetRevisionIds = effectivity?.RevisionIds ?? [];
+            var targets = await (from revision in db.TestProcedureRevisions.AsNoTracking()
+                                     .Where(x => targetRevisionIds.Contains(x.Id))
+                                 join procedure in db.TestProcedures.AsNoTracking()
+                                     .Where(x => x.ProjectId == review.ProjectId && x.Level == review.ProcedureLevel())
+                                     on revision.ProcedureId equals procedure.Id
+                                 orderby procedure.BaseNumber
+                                 select new
+                                 {
+                                     procedure.BaseNumber,
+                                     procedure.Title,
+                                     CurrentRevision = revision.Revision
+                                 }).Take(500).ToListAsync(ct);
             return Results.Ok(new
             {
                 capabilities = new
@@ -359,7 +365,7 @@ public static class VerificationImpactEndpoints
                 procedureTargets = targets.Select(x => new
                 {
                     x.BaseNumber, x.Title,
-                    currentRevision = currentRevisions.TryGetValue(x.Id, out var revision) ? revision : -1,
+                    currentRevision = x.CurrentRevision,
                 }),
                 review.Id, review.DisplayNumber, review.BaseNumber, review.Revision,
                 discipline = review.Discipline.ToString(), state = review.State.ToString(),
@@ -425,11 +431,29 @@ public static class VerificationImpactEndpoints
                         return Results.BadRequest(new { error = $"{baseNumber} belongs to another project." });
                     if (target.Level != review.ProcedureLevel())
                         return Results.BadRequest(new { error = $"{baseNumber} is a {target.Level} procedure and cannot be changed by a {review.Discipline} test change request." });
+                    var effectivity = await TestProcedureEffectivity.ForReleaseAsync(
+                        db, review.ProjectId, review.ReleaseId, ct);
+                    if (effectivity is null || !effectivity.RevisionByProcedure.TryGetValue(target.Id, out var carriedRevisionId))
+                        return Results.BadRequest(new
+                        {
+                            error = $"{baseNumber} is not carried by the target software build.",
+                            code = "procedure_not_carried_by_build"
+                        });
                     var current = await db.TestProcedureRevisions.AsNoTracking()
-                        .Where(x => x.ProcedureId == target.Id).Select(x => (int?)x.Revision)
-                        .OrderByDescending(x => x).FirstOrDefaultAsync(ct) ?? -1;
-                    if (request.Revision <= current)
-                        return Results.BadRequest(new { error = $"{baseNumber} is at revision {current:D2}. A change to it must propose revision {current + 1:D2} or later." });
+                        .Where(x => x.Id == carriedRevisionId).Select(x => (int?)x.Revision)
+                        .SingleOrDefaultAsync(ct);
+                    if (current is null)
+                        return Results.BadRequest(new
+                        {
+                            error = $"The target build's selected revision for {baseNumber} no longer exists.",
+                            code = "procedure_manifest_revision_missing"
+                        });
+                    if (request.Revision != current.Value + 1)
+                        return Results.BadRequest(new
+                        {
+                            error = $"{baseNumber}.{current.Value:D2} is carried by the target build. The proposed revision must be {current.Value + 1:D2}.",
+                            code = "procedure_revision_not_next_for_build"
+                        });
                 }
 
                 // The requirements a procedure is written against have to be this project's, and at this

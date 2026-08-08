@@ -344,7 +344,13 @@ public static class BaselineEndpoints
                 return Results.Conflict(new { error = "The release package is frozen while approval is in progress.", code = "release_package_frozen" });
             var release = await db.Releases.AsNoTracking().SingleAsync(x => x.Id == baseline.ReleaseId, ct); var project = await db.Projects.AsNoTracking().SingleAsync(x => x.Id == baseline.ProjectId, ct);
             var requirementCounts = await (from member in db.BaselineRequirements.AsNoTracking().Where(x => x.BaselineId == id) join artifact in db.Requirements.AsNoTracking() on member.ArtifactId equals artifact.Id group artifact by artifact.Level into g select new { g.Key, Count = g.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
-            var testCounts = await db.TestProcedures.AsNoTracking().Where(x => x.ProjectId == project.Id).GroupBy(x => x.Level).Select(x => new { x.Key, Count = x.Count() }).ToDictionaryAsync(x => x.Key, x => x.Count, ct);
+            var procedureEffectivity = await TestProcedureEffectivity.ForBaselineAsync(db, id, ct);
+            var procedureRevisionIds = procedureEffectivity?.RevisionIds ?? [];
+            var testCounts = await (from revision in db.TestProcedureRevisions.AsNoTracking().Where(x => procedureRevisionIds.Contains(x.Id))
+                                    join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id
+                                    group procedure by procedure.Level into grouped
+                                    select new { Key = grouped.Key, Count = grouped.Count() })
+                .ToDictionaryAsync(x => x.Key, x => x.Count, ct);
             var suffix = release.Version.Replace(".", ""); var specs = new[] {
                 (ControlledDocumentType.Sysrd,$"SYSRD-{int.Parse(suffix):D6}",$"{project.SoftwareProduct} System Requirements Document",requirementCounts.GetValueOrDefault(RequirementLevel.System)),
                 (ControlledDocumentType.SwrdHighLevel,$"HLRD-{int.Parse(suffix):D6}",$"{project.SoftwareProduct} High-Level Software Requirements Document",requirementCounts.GetValueOrDefault(RequirementLevel.HighLevel)),
@@ -356,7 +362,7 @@ public static class BaselineEndpoints
             // at generation and never re-resolved: revising a template afterwards must not change a document that
             // has already been produced and possibly signed.
             var approvedTemplates = await ControlledLayouts.ApprovedAsync(db, project.Id, ct);
-            var existing = await db.ControlledDocuments.Where(x => x.BaselineId == id).ToListAsync(ct); foreach (var spec in specs.Where(s => existing.All(x => x.Type != s.Item1))) { var content = $"{baseline.RequirementsHash}|{spec.Item1}|{spec.Item4}|{http.UserAccount().UserName}"; var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant(); db.ControlledDocuments.Add(new ControlledDocument(project.Id, release.Id, baseline.Id, spec.Item1, spec.Item2, spec.Item3, 0, hash, spec.Item4, DateTimeOffset.UtcNow, approvedTemplates.GetValueOrDefault(spec.Item1))); }
+            var existing = await db.ControlledDocuments.Where(x => x.BaselineId == id).ToListAsync(ct); foreach (var spec in specs.Where(s => existing.All(x => x.Type != s.Item1))) { var procedureDocument = spec.Item1 is ControlledDocumentType.SystemTestProcedures or ControlledDocumentType.HighLevelTestProcedures or ControlledDocumentType.LowLevelTestProcedures; var manifestHash = procedureDocument ? baseline.TestProceduresHash ?? baseline.RequirementsHash : baseline.RequirementsHash; var content = $"{manifestHash}|{spec.Item1}|{spec.Item4}|{http.UserAccount().UserName}"; var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content))).ToLowerInvariant(); db.ControlledDocuments.Add(new ControlledDocument(project.Id, release.Id, baseline.Id, spec.Item1, spec.Item2, spec.Item3, 0, hash, spec.Item4, DateTimeOffset.UtcNow, approvedTemplates.GetValueOrDefault(spec.Item1))); }
             await db.SaveChangesAsync(ct); return Results.Ok(new { generated = await db.ControlledDocuments.CountAsync(x => x.BaselineId == id, ct) });
         });
 

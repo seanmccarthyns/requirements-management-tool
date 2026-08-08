@@ -59,22 +59,40 @@ public static class VerificationCoverageProjection
     /// Returned as a composable query rather than a list so callers filter in the database. The workspace
     /// pages fifty thousand requirements and must never materialize coverage to answer this.
     /// </summary>
-    public static IQueryable<Guid> SettledCoveredRequirementRevisionIds(AeroLinkDbContext db) =>
-        db.TestCoverage.AsNoTracking()
+    public static IQueryable<Guid> SettledCoveredRequirementRevisionIds(AeroLinkDbContext db,
+        IReadOnlyCollection<Guid>? effectiveProcedureRevisionIds = null, bool buildScoped = false)
+    {
+        var source = db.TestCoverage.AsNoTracking();
+        if (effectiveProcedureRevisionIds is not null)
+        {
+            var procedureRevisionIds = effectiveProcedureRevisionIds.Distinct().ToList();
+            source = source.Where(coverage => procedureRevisionIds.Contains(coverage.ProcedureRevisionId));
+        }
+        return source
             .Where(coverage => !coverage.IsSuspect
                 && db.TestProcedureRevisions.Any(revision => revision.Id == coverage.ProcedureRevisionId
                     && revision.State == TestProcedureState.Approved
-                    && !db.TestProcedureRevisions.Any(sibling => sibling.ProcedureId == revision.ProcedureId
-                        && sibling.State != TestProcedureState.Approved)))
+                    && (buildScoped || !db.TestProcedureRevisions.Any(sibling => sibling.ProcedureId == revision.ProcedureId
+                        && sibling.State != TestProcedureState.Approved))))
             .Select(coverage => coverage.RequirementRevisionId);
+    }
 
     /// <summary>
     /// Every requirement revision some coverage link points at, settled or not. The difference between this
     /// and <see cref="SettledCoveredRequirementRevisionIds"/> is exactly the Suspect state: a revision that
     /// has been linked to a procedure by somebody, where that link does not currently count.
     /// </summary>
-    public static IQueryable<Guid> LinkedRequirementRevisionIds(AeroLinkDbContext db) =>
-        db.TestCoverage.AsNoTracking().Select(coverage => coverage.RequirementRevisionId);
+    public static IQueryable<Guid> LinkedRequirementRevisionIds(AeroLinkDbContext db,
+        IReadOnlyCollection<Guid>? effectiveProcedureRevisionIds = null)
+    {
+        var source = db.TestCoverage.AsNoTracking();
+        if (effectiveProcedureRevisionIds is not null)
+        {
+            var procedureRevisionIds = effectiveProcedureRevisionIds.Distinct().ToList();
+            source = source.Where(coverage => procedureRevisionIds.Contains(coverage.ProcedureRevisionId));
+        }
+        return source.Select(coverage => coverage.RequirementRevisionId);
+    }
 
     /// <summary>
     /// The settled-covered subset of the supplied revisions, for callers that already hold a bounded
@@ -83,11 +101,14 @@ public static class VerificationCoverageProjection
     public static async Task<HashSet<Guid>> SettledCoveredAsync(
         AeroLinkDbContext db,
         IReadOnlyCollection<Guid> requirementRevisionIds,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyCollection<Guid>? effectiveProcedureRevisionIds = null,
+        bool buildScoped = false)
     {
         if (requirementRevisionIds.Count == 0) return [];
         var ids = requirementRevisionIds.Distinct().ToList();
-        return (await SettledCoveredRequirementRevisionIds(db).Where(id => ids.Contains(id)).Distinct().ToListAsync(ct)).ToHashSet();
+        return (await SettledCoveredRequirementRevisionIds(db, effectiveProcedureRevisionIds, buildScoped)
+            .Where(id => ids.Contains(id)).Distinct().ToListAsync(ct)).ToHashSet();
     }
 
     /// <summary>
@@ -96,12 +117,15 @@ public static class VerificationCoverageProjection
     public static async Task<Dictionary<Guid, string>> StatesAsync(
         AeroLinkDbContext db,
         IReadOnlyCollection<Guid> requirementRevisionIds,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyCollection<Guid>? effectiveProcedureRevisionIds = null,
+        bool buildScoped = false)
     {
         if (requirementRevisionIds.Count == 0) return [];
         var ids = requirementRevisionIds.Distinct().ToList();
-        var settled = await SettledCoveredAsync(db, ids, ct);
-        var linked = (await LinkedRequirementRevisionIds(db).Where(id => ids.Contains(id)).Distinct().ToListAsync(ct)).ToHashSet();
+        var settled = await SettledCoveredAsync(db, ids, ct, effectiveProcedureRevisionIds, buildScoped);
+        var linked = (await LinkedRequirementRevisionIds(db, effectiveProcedureRevisionIds)
+            .Where(id => ids.Contains(id)).Distinct().ToListAsync(ct)).ToHashSet();
         return ids.ToDictionary(id => id, id => settled.Contains(id)
             ? RequirementCoverageState.Covered
             : linked.Contains(id) ? RequirementCoverageState.Suspect : RequirementCoverageState.Uncovered);
@@ -111,12 +135,18 @@ public static class VerificationCoverageProjection
         AeroLinkDbContext db,
         IReadOnlyCollection<Guid> requirementRevisionIds,
         CancellationToken ct,
-        bool buildScoped = false)
+        bool buildScoped = false,
+        IReadOnlyCollection<Guid>? effectiveProcedureRevisionIds = null)
     {
         if (requirementRevisionIds.Count == 0) return [];
         var ids = requirementRevisionIds.Distinct().ToList();
-        return await (from coverage in db.TestCoverage.AsNoTracking()
-                      where ids.Contains(coverage.RequirementRevisionId)
+        var coverageSource = db.TestCoverage.AsNoTracking().Where(x => ids.Contains(x.RequirementRevisionId));
+        if (effectiveProcedureRevisionIds is not null)
+        {
+            var procedureRevisionIds = effectiveProcedureRevisionIds.Distinct().ToList();
+            coverageSource = coverageSource.Where(x => procedureRevisionIds.Contains(x.ProcedureRevisionId));
+        }
+        return await (from coverage in coverageSource
                       join revision in db.TestProcedureRevisions.AsNoTracking()
                           on coverage.ProcedureRevisionId equals revision.Id
                       join procedure in db.TestProcedures.AsNoTracking()
