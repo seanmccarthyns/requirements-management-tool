@@ -1,7 +1,7 @@
 # Aerospace Development Assurance Platform
 
 > **New here — human or model? Read [PROJECT_STATE.md](PROJECT_STATE.md) first, then the
-> [current product handoff](CURRENT_PRODUCT_HANDOFF_2026-08-06.md).** They record what
+> [current product handoff](CURRENT_PRODUCT_HANDOFF_2026-08-08.md).** They record what
 > exists today, what is deliberately excluded, where delivery stands, and the known limitations. The
 > documents indexed below are durable definitions and historical records; `PROJECT_STATE.md` describes
 > the present.
@@ -43,7 +43,7 @@ The first usable vertical slice is system-level:
 
 > SRCR -> system requirement revisions -> review and approval -> baseline -> SYSRD -> system test procedure -> externally produced results and evidence -> traceability
 
-This slice proved controlled change, immutable history, exact baselines, controlled document generation, verification evidence, and an end-to-end audit story. Implementation has now expanded through software HLRs, LLRs, software change requests, typed traceability, and build-specific verification.
+This slice proved controlled change, immutable history, exact baselines, controlled document generation, verification evidence, and an end-to-end audit story. Implementation has now expanded through software HLRs, LLRs, software change requests, typed traceability, build-specific verification, direct Change Requests / Test Procedure Explorer / Test Results verification surfaces, and first-class manual Test Change Request authoring.
 
 ## The application
 
@@ -65,7 +65,8 @@ demonstrations use the `FMSLIVE` dataset described in
 | Document | Purpose |
 | --- | --- |
 | [Project state](PROJECT_STATE.md) | **Start here.** What exists today, what is excluded, delivery status, known limitations |
-| [Current product handoff](CURRENT_PRODUCT_HANDOFF_2026-08-06.md) | **Current restart point.** Test procedures authored, revised and baselined like requirements, approved procedure work carried into builds, and Word-authored controlled documents checked out, reviewed, approved, and released as exact DOCX/PDF pairs |
+| [Current product handoff, 8 August](CURRENT_PRODUCT_HANDOFF_2026-08-08.md) | **Current restart point.** Qualified Stage 3B/Stage 4 state, exact `main`, TCR review/concurrency architecture, fresh independent audit issues, and safe next sequence |
+| [Product handoff, 6 August](CURRENT_PRODUCT_HANDOFF_2026-08-06.md) | Historical. Test procedures authored, revised and baselined like requirements, approved procedure work carried into builds, and Word-authored controlled documents checked out, reviewed, approved, and released as exact DOCX/PDF pairs |
 | [Product handoff, 5 August](CURRENT_PRODUCT_HANDOFF_2026-08-05.md) | Historical. Imported baselines, explicit assessment outcomes, local test-world integration, Problem Report refinements, and safe continuation |
 | [Product handoff, 4 August](CURRENT_PRODUCT_HANDOFF_2026-08-04.md) | Historical. State-aware downstream assessments with withdrawable conclusions, Problem Report editing under the universal lease, the "a procedure must be written" verification outcome, and source authority by change-request type |
 | [3 August handoff](CURRENT_PRODUCT_HANDOFF_2026-08-03.md) | Historical delivery record for truthful Build-scoped PR/TCR queues, persistent HLR/LLR Draft scope, evidence-first assessments, and Code/GitLab traceability |
