@@ -1,6 +1,6 @@
 # Project State — Start Here
 
-**Last updated: 2026-08-06.**
+**Last updated: 2026-08-08.**
 
 This is the orientation record for anyone — human or model — picking up AeroLink. It answers *what
 exists, what is true today, what is deliberately not being built, and where to start*. Every other
@@ -81,13 +81,17 @@ infrastructure and API boundaries. See [product/docs/ARCHITECTURE.md](product/do
 The full controlled chain runs end to end:
 
 change request authoring with server-leased exclusive checkout and autosave recovery → sequential *and*
-parallel author-selected approval sequences with frozen snapshot hashes → password-confirmed
-electronic signatures → candidate baseline assembly with SHA-256 freeze → deterministic baseline
-materialization → generated SYSRD/SWRD and test-procedure documents in DOCX and PDF with approval
-provenance and document control → versioned test procedures → external execution import with evidence
-and immutable retest chains → typed, version-aware traceability with suspect links and impact
+parallel author-selected/configured approval sequences with frozen snapshot hashes → stage-authorized
+electronic signatures over immutable snapshots → candidate baseline assembly with SHA-256 freeze →
+deterministic baseline materialization → generated SYSRD/SWRD and test-procedure documents in DOCX and PDF
+with approval provenance and document control → versioned test procedures → external execution import with
+evidence and immutable retest chains → typed, version-aware traceability with suspect links and impact
 analysis → a verification-impact queue that raises test work when an approved change alters what must be
 verified → a governed release campaign with computed readiness gates and ordered release approval.
+
+Password re-confirmation is implemented on the qualified SRCR and other established approval paths. Test Change
+Request approval currently lacks password re-confirmation and a distinct signature-meaning input; #398 tracks
+that gap and this document does not claim TCR signature parity until it is closed.
 
 Around that core: enterprise requirements workspace, configurable artifact schemas, saved views and
 structured queries, governed bulk operations, visual redlines, CSV/XLSX onboarding that lands in a
@@ -104,6 +108,14 @@ review workflows**, where a project records who signs a change request, in what 
 versioned and never edited in place; a **Jira connector** with field mapping and link-back; and **approved
 document templates that decide what a generated document contains**, rather than being numbered and approved
 while a generator ignored them.
+
+The Aug. 7–8 increment added the API-served production client, production-build browser qualification, direct
+verification surfaces named **Change Requests**, **Test Procedure Explorer**, and **Test Results**, and
+first-class manual Test Change Requests. A manual TCR may cover several approved source Change Requests, carries
+its own rich engineering case and Problem Reports, preserves moved verification-impact history, and executes a
+configured sequential or parallel review workflow. New review cycles use a canonical versioned JSON snapshot of
+the governed package; source/link/impact mutations and submission share optimistic concurrency and deterministic
+true-collision tests.
 
 Change control reads as two facts rather than one. **Allocation** says which build a change request is going
 into, or that it is **deferred** — put away for another day with the state it had reached remembered, so a
@@ -189,6 +201,13 @@ must be reconfirmed or replaced named, none, or not yet knowable because the bui
 requirements. Suspect is stated before "no procedure", because a reader who sees "covered" stops looking and
 that is the case most likely to be answered wrongly.
 
+A manually raised TCR adds a controlled Title / Problem / Analysis / Solution case and may claim several
+approved source changes. Folded source assessments' impact items move to the surviving package with identity,
+assignment, decision, attribution, and history retained; unfold restores a fresh actionable assessment. Review
+cycles expose active/pending/completed stages, freeze the applicable workflow and authority, and retain prior
+cycles after return and resubmission. Current automatically raised TCRs still have a completeness gap: #397
+tracks the ability to submit a newly generated package without ever writing its engineering case.
+
 Coverage is a question the requirements workspace can now answer. A **coverage-state filter** builds a worklist
 of what is Covered, Suspect or Uncovered, and every row carries its state; the suspect and uncovered ones are
 buttons that open the verification trace rather than labels that only read. Covered means one thing everywhere —
@@ -210,6 +229,11 @@ clearing the suspect flag rather than duplicating it; and a procedure a retireme
 raises its own item. **Suspect coverage is not coverage**: the `coverage` readiness gate counts only
 confirmed links, so a requirement cannot reach release on the strength of a procedure written against its
 previous wording.
+
+The independent Aug. 8 review found two unclosed materialization/trace invariants. #400 tracks procedure
+proposals that can name same-level requirement revisions outside the TCR's governed source/build scope. #401
+tracks Modify materialization that can silently drop unchanged predecessor coverage because only the proposal's
+explicit driving IDs are linked to the new procedure revision.
 
 **Bringing in a program that already exists elsewhere** is a separate act from proposing a change (DEC-093).
 An import creates an **externally sourced baseline** directly, released on arrival, carrying the provenance
@@ -263,24 +287,29 @@ Procedures covering requirements introduced or modified by the active build are 
 mandatory changed-requirement tests. They cannot be removed from the build test set, and the exact-revision
 result/evidence gates prevent release until they pass with evidence.
 
-Verification is two pages per discipline rather than one workspace with four tabs (DEC-077). **Testing
-Coverage** answers "what are this build's requirements tested by, and what test work has nobody picked up" —
-it carries the test change request queue, the requirement coverage inventory, the controlled procedure
-library with its filters and paging, procedure authoring, independent approval, and the verification
-decisions inside each package including reopening one. **Test Results** answers "what does this build have
-to run, and what happened when it was run" — the build test set, the recorded determinations with their
-evidence, run history, retests, and the corrective action a problem report sends somebody here to perform.
-System has one pair; software has two, HLR and LLR, because that work is planned, done and approved
-separately. `/system-verification` and `/software-verification` are now a chooser between the pages rather
-than a workspace of their own.
+Verification is three pages per discipline rather than one overloaded workspace. **Change Requests** answers
+"what approved change affects this discipline's tests, what package carries the answer, and what procedure work
+is being proposed/reviewed" — downstream test assessments, verification-impact decisions, automatic/manual Test
+Change Requests, source folding, Problem Reports, procedure-change proposals, assignment, and staged review.
+**Test Procedure Explorer** answers "what controlled procedures does this build carry, what is their exact
+history, and what do they verify". **Test Results** answers "what does this build have to run, and what happened
+when it was run" — the build test set, recorded determinations with evidence, run history, retests, and the
+corrective action a Problem Report sends somebody here to perform. System has one trio; software has separate
+HLR and LLR trios because the work is planned, done, and approved separately.
+
+The Explorer and authoring effectivity contract is not yet fully qualified. Reopened #214 tracks the fact that
+procedure lists/history and TCR Modify/Retire targets derive from coverage/project-global latest revisions rather
+than the exact baseline procedure manifest. #399 tracks the Explorer Trace tab showing only a count instead of
+the exact requirements. #402 tracks fixed-page candidate truncation at current dataset scale.
 
 Primary navigation mirrors that work: **Requirements** owns change requests, requirements, requirements
-documents, and Digital Thread; **Verification** owns the direct coverage, results, and verification-document
-destinations; **Code**, **Documentation Center**, and **Problem Reports** are standalone destinations in that
-order. Documentation Center controls Word-authored lifecycle documents without replacing Word. Code records exact
-LLR-revision-to-GitLab-merge pointers without hosting source, and released Build 1.5 is read-only. The older verification chooser URLs remain
-valid deep links, but no redundant generic Verification entry occupies the sidebar. Legitimate assurance role
-names and production-assurance terminology are unchanged.
+documents, and Digital Thread; **Verification** owns the direct Change Requests, Test Procedure Explorer, Test
+Results, and verification-document destinations; **Code**, **Documentation Center**, and **Problem Reports** are
+standalone destinations in that order. Documentation Center controls Word-authored lifecycle documents without
+replacing Word. Code records exact LLR-revision-to-GitLab-merge pointers without hosting source, and released
+Build 1.5 is read-only. Legacy verification chooser/deep-link URLs remain supported where explicitly retained,
+but no redundant generic Verification workspace defines the current surface. Legitimate assurance role names
+and production-assurance terminology are unchanged.
 
 A build's test work is scoped by a **Build Test Set** — one per build per discipline, a working list rather
 than a controlled artefact, recording who put each procedure in it and why (changed requirement, coverage
@@ -288,12 +317,13 @@ area, corrective action, or simply chosen). The release gates measure that set. 
 "evidence required before release" flag on an individual decision no longer has a control that sets it; it
 survives server-side only as one of the inputs that seeds a new set (DEC-073 superseded by DEC-076).
 
-Approved changes still create System, Software HLR and/or Software LLR **Test Change Requests** — controlled
-records with their own numbers and revisions, which may cover more than one requirement change request and
-may also be raised by hand when a set of changes is best tested together.
+Approved changes still create System, Software HLR and/or Software LLR test assessments. A controlled TCR is
+allocated when the assessment concludes that procedure work is required; it may also be raised manually when
+several approved source changes are best tested as one package. TCRs have their own numbers/revisions, rich case,
+Problem Reports, exact source identities, governed impact decisions, staged review cycles, and successor history.
 
-The restart-ready description, routes, issue state and validation evidence are in
-[CURRENT_PRODUCT_HANDOFF_2026-08-02.md](CURRENT_PRODUCT_HANDOFF_2026-08-02.md).
+The restart-ready description, exact qualified `main`, audit findings and safe next sequence are in
+[CURRENT_PRODUCT_HANDOFF_2026-08-08.md](CURRENT_PRODUCT_HANDOFF_2026-08-08.md).
 
 ## The demonstration dataset
 
@@ -312,15 +342,20 @@ The tool never auto-creates or auto-approves a successor release. Details in
 
 ## Where delivery stands
 
-The AeroLink 3.0 implementation program and its review follow-ups have been reconciled. GitHub issue #29 and
-every child/follow-up are closed. The later Problem Reports increment and both 2 August engineering-observation
-sets (#258-#262 and #277-#280) followed the same focused, gated pull-request path. Residual identity federation
-and deployment operations were closed with explicit resume conditions because they require a real provider or
-hosting contract, not generic product simulation.
+The original AeroLink 3.0 implementation program and its review follow-ups have been reconciled. Subsequent
+focused increments through PR #388 delivered active Problem Reports, the August engineering-observation work,
+managed Word documents, direct verification surfaces, production-shaped client hosting, and Stage 4 manual TCR
+authoring with hardened consolidation, review snapshots, staged workflows, assignment and concurrency.
+
+`main` at `d06fcee94473a9128a98e58b3699c1f6c0ad3af6` passed the post-merge Product Quality Gate. That does not mean
+there is no backlog. The independent Aug. 7–8 audit raised #395–#402, reopened #214, and reconciled #365 to its
+remaining browser/history scope. Residual identity federation and deployment operations remain closed with
+explicit resume conditions because they require a real provider or hosting contract, not generic product
+simulation.
 
 Per-workstream status is in [AEROLINK_3_IMPLEMENTATION_STATUS.md](AEROLINK_3_IMPLEMENTATION_STATUS.md). Its
-vocabulary distinguishes **MVP delivered**, **deferred by decision**, and **deployment-owned** from an
-unqualified claim that every enterprise deployment capability is complete.
+vocabulary distinguishes **MVP delivered**, **deferred by decision**, **deployment-owned**, and **focused audit
+backlog** from an unqualified claim that every enterprise deployment capability is complete.
 
 **[PRODUCT_REVIEW_2026_07_26.md](PRODUCT_REVIEW_2026_07_26.md)** holds the findings from the first evening of
 using the product as an engineer would. **Every item in it is now closed** — the six defects, and all nine that
@@ -339,6 +374,18 @@ correct, and had no route to it.
 
 Understating these is a product-integrity failure, not a marketing choice.
 
+- **Multi-Program verification confidentiality is not qualified.** The Aug. 8 audit found verification read and
+  evidence-download routes that do not consistently establish access to the owning Program. #395 is critical
+  and must be closed before broader multi-Program use.
+- **Build-scoped procedure effectivity is not yet sourced consistently from the exact procedure manifest.**
+  Reopened #214 covers Procedure Explorer/history and TCR Modify/Retire targets. Do not claim every procedure
+  surface is configuration-correct until it is closed.
+- **TCR trace/materialization has two open integrity defects.** #400 covers out-of-scope driving requirement
+  revisions; #401 covers Modify silently dropping unchanged predecessor coverage.
+- **TCR lifecycle/electronic-approval parity is incomplete.** #396 covers folding unapproved sources; #397
+  covers current automatic packages bypassing the case; #398 covers password/meaning/current-fallback authority.
+- **Procedure trace and authoring reachability are incomplete.** #399 covers the count-only Trace tab; #402
+  covers silent candidate truncation at fixed limits.
 - **No build carries a procedure manifest yet.** The mechanism is complete and reachable, but every existing
   build predates it, so `baseline_test_procedures` is empty in the demonstration data. `MarkReleased`
   deliberately does not require one; gating on it would make already-released builds retrospectively invalid.
@@ -404,9 +451,10 @@ deep-linked sign-in, verifies the resulting System SRCR and immutable verificati
 fault-injects network and conflict responses to prove that failed writes preserve input and create no record
 (DEC-061).
 
-CI runs the dev journeys and the production journeys on Linux for pull requests, plus one unsharded Windows
-pass on the schedule, because Windows remains a supported deployment platform. The Windows job also runs
-lint, typecheck and build — it did not until 2026-07-26, and the client had been failing to compile there.
+CI runs the dev journeys and the production journeys according to changed-area classification, plus scheduled
+coverage. The required reporter states exactly which jobs ran and refuses a pass that validated nothing. The
+Windows gate runs backend, client lint/type-check/build, and product journeys; PostgreSQL migration/bootstrap
+runs against disposable infrastructure when selected.
 
 Local demonstration identities (`admin`, `systems.author`, `software.author`, `systems.reviewer`,
 `release.manager`) share a local-only password documented in `product/README.md`. Production
@@ -601,14 +649,14 @@ reason the document set can be trusted.
   and lost to `.controlledEditor input { width: 100% }` — (0,1,0) against (0,1,1) — so the input rendered at
   1160px and pushed the page 106px off screen. The cascade lesson above is about load order; this is the same
   failure through the other mechanism, and the same fix applies. When a rule matters, make it win on purpose.
-# Current implementation checkpoint — 2026-08-02
 
-Current `main` includes trustworthy Draft change request persistence, HLR/LLR-scoped histories and assessments,
-searchable controlled references, actionable downstream assessment decisions with automatic Draft linking,
-the agreed Problem Report lifecycle and fields, mandatory changed-requirement testing, evidence-aware
-SYSR-to-build Digital Thread paths, authoritative GitLab LLR-to-code release gating, and the Requirements / Verification / Code /
-Problem Reports navigation model.
-Non-authoritative Concurrency and count-only IntegrityScan simulations are retired. Each focused delivery is
-qualified through the GitHub Product Quality Gate and exact-merge local checks; the persistent PostgreSQL
-application is restarted healthy without replacing its engineering records. See
-[CURRENT_PRODUCT_HANDOFF_2026-08-02.md](CURRENT_PRODUCT_HANDOFF_2026-08-02.md).
+# Current implementation checkpoint — 2026-08-08
+
+Current `main` at `d06fcee94473a9128a98e58b3699c1f6c0ad3af6` includes the API-served production client,
+qualified direct verification navigation, first-class manual Test Change Requests, multi-source impact-item
+consolidation, configured staged TCR review, canonical review snapshots, assignment-aligned authority,
+optimistic concurrency including true EF-collision tests, and atomic controlled TCR successor revisioning.
+
+The post-merge Product Quality Gate passed. The fresh independent review raised #395–#402, reopened #214, and
+left #365 open only for its remaining browser/history presentation. See
+[CURRENT_PRODUCT_HANDOFF_2026-08-08.md](CURRENT_PRODUCT_HANDOFF_2026-08-08.md).
