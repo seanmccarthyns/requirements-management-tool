@@ -1206,7 +1206,231 @@ public sealed class FmsShowcaseSeeder(AeroLinkDbContext db, IProjectLadderPolicy
         ];
         var traceCoverage = await TraceCoverageInvariantAsync(projectId, ct);
         invariants.Add(new("trace-gap-inventory", traceCoverage.Holds, traceCoverage.Detail));
+        var families = await FamilyInventoryInvariantAsync(projectId, ct);
+        invariants.Add(new("family-inventory", families.Holds, families.Detail));
         return invariants;
+    }
+
+    private sealed record FamilyInventoryCheck(bool Holds, string Detail);
+
+    /// <summary>
+    /// The #913 artifact-family inventory: one diagnostic that counts the representative records the
+    /// showcase carries in every user-visible controlled family, holds the seed to the owner's
+    /// repeated-family minimum (at least five) wherever the domain supports it, and reports the whole
+    /// matrix — including the families that deliberately stay small — so an operator sees the numbers,
+    /// not just a pass.
+    ///
+    /// Families with their own dedicated invariants (procedures, executions volume, documents, Problem
+    /// Report scenarios, active-build change requests) keep those; this adds the cross-family view and
+    /// the state-variety requirements no single-family invariant covers (a pass/fail/retest chain, for
+    /// example). Explicitly out of scope, recorded here rather than in a table nobody can query:
+    /// Interface change control is retired for this project (#889) and its retirement has its own
+    /// invariant; the product line, controlled library, release campaign and leadership positions are
+    /// deliberately singular families. Grouping happens client-side on purpose: SQLite cannot
+    /// ORDER BY or aggregate DateTimeOffset-typed columns the way PostgreSQL can, and this check must
+    /// qualify identically on both.
+    /// </summary>
+    private async Task<FamilyInventoryCheck> FamilyInventoryInvariantAsync(Guid projectId, CancellationToken ct)
+    {
+        var levels = await db.Requirements.AsNoTracking()
+            .Where(x => x.ProjectId == projectId)
+            .Select(x => (RequirementLevel?)x.Level).ToListAsync(ct);
+        var requests = await db.SystemChangeRequests.AsNoTracking()
+            .Where(x => x.ProjectId == projectId)
+            .Select(x => new { x.Type, x.SoftwareLevel, State = (ChangeRequestState?)x.State }).ToListAsync(ct);
+        var executionRows = await (from execution in db.TestExecutions.AsNoTracking()
+            join revision in db.TestProcedureRevisions.AsNoTracking() on execution.ProcedureRevisionId equals revision.Id
+            join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id
+            where execution.ProjectId == projectId
+            select new { execution.Id, Outcome = (TestOutcome?)execution.Outcome, execution.RetestOfExecutionId,
+                revision.ProcedureId, execution.ExecutedAt,
+                ProcedureLevel = (TestProcedureLevel?)procedure.Level, procedure.ArtifactKind }).ToListAsync(ct);
+        var outcomes = executionRows.Select(x => new { x.Id, x.Outcome, x.RetestOfExecutionId, x.ProcedureId, x.ExecutedAt }).ToList();
+        var verificationFamilies = await db.TestProcedures.AsNoTracking()
+            .Where(x => x.ProjectId == projectId)
+            .Select(x => new { x.Level, x.ArtifactKind }).ToListAsync(ct);
+        var reviewRows = await db.TestChangeReviews.AsNoTracking()
+            .Where(x => x.ProjectId == projectId)
+            .Select(x => new { x.Discipline, x.ArtifactKind }).ToListAsync(ct);
+        var impactRows = await (from item in db.VerificationImpactItems.AsNoTracking()
+            join review in db.TestChangeReviews.AsNoTracking() on item.TestChangeReviewId equals review.Id
+            where item.ProjectId == projectId
+            select new { review.Discipline, review.ArtifactKind }).ToListAsync(ct);
+        var assessments = await db.DownstreamChangeAssessments.AsNoTracking()
+            .Where(x => x.ProjectId == projectId)
+            .Select(x => (RequirementLevel?)x.TargetLevel).ToListAsync(ct);
+
+        // The configured families come from the project's own ladder profiles — never from rows that
+        // happen to exist — so a family that loses every row is still enumerated, looked up at zero,
+        // and named instead of silently vanishing from the matrix.
+        var ladderPolicy = await resolver.ResolveAsync(projectId, ct);
+        // Iterate the definitions themselves: levels whose ladder step has no verification profile are
+        // legitimately configured without one, and ILadderPolicy.VerificationProfile throws for them
+        // rather than returning null.
+        var configuredFamilies = ladderPolicy.Definitions
+            .Where(x => x.VerificationProfile is not null)
+            .SelectMany(x => x.VerificationProfile!.Definitions.Select(d => (Key: d.Key, Level: x.Level)))
+            .ToList();
+        static RequirementLevel ToRequirementLevel(TestProcedureLevel level) => level switch
+        {
+            TestProcedureLevel.System => RequirementLevel.System,
+            TestProcedureLevel.HighLevel => RequirementLevel.HighLevel,
+            _ => RequirementLevel.LowLevel,
+        };
+        static VerificationArtifactKey KeyOf(TestChangeReviewDiscipline discipline, VerificationArtifactKind kind) =>
+            new(discipline switch
+            {
+                TestChangeReviewDiscipline.System => VerificationDiscipline.System,
+                TestChangeReviewDiscipline.HighLevelSoftware => VerificationDiscipline.HighLevelSoftware,
+                _ => VerificationDiscipline.LowLevelSoftware,
+            }, kind);
+        var artifactCounts = configuredFamilies.ToDictionary(
+            f => (f.Level, f.Key.Kind),
+            f => verificationFamilies.Count(x => ToRequirementLevel(x.Level) == f.Level && x.ArtifactKind == f.Key.Kind));
+        var reviewCounts = configuredFamilies.ToDictionary(
+            f => f.Key,
+            f => reviewRows.Count(x => KeyOf(x.Discipline, x.ArtifactKind) == f.Key));
+        var impactCounts = configuredFamilies.ToDictionary(
+            f => f.Key,
+            f => impactRows.Count(x => KeyOf(x.Discipline, x.ArtifactKind) == f.Key));
+        var assessmentTargets = ladderPolicy.OrderedLevels
+            .Where(level => ladderPolicy.ParentLevels(level).Count > 0)
+            .ToList();
+        var assessmentCounts = assessmentTargets.ToDictionary(
+            level => level,
+            level => assessments.Count(x => x == level));
+        // Authored provenance for software-Procedure families: a procedure revision raised from a test
+        // change request. The #726 cutover generates its revisions with migration provenance and no
+        // source TCR, so this distinguishes authored families from migration-only ones independently of
+        // the current review count.
+        var procedureProvenance = await (from revision in db.TestProcedureRevisions.AsNoTracking()
+            join procedure in db.TestProcedures.AsNoTracking() on revision.ProcedureId equals procedure.Id
+            where procedure.ProjectId == projectId && procedure.ArtifactKind == VerificationArtifactKind.Procedure
+            select new { Level = (TestProcedureLevel?)procedure.Level, Authored = revision.SourceTestChangeRequestId != null })
+            .ToListAsync(ct);
+        static TestProcedureLevel ToTestProcedureLevel(RequirementLevel level) => level switch
+        {
+            RequirementLevel.System => TestProcedureLevel.System,
+            RequirementLevel.HighLevel => TestProcedureLevel.HighLevel,
+            _ => TestProcedureLevel.LowLevel,
+        };
+        // Executions belong to the executable family of the procedure revision they ran, and the product
+        // exposes separate Test Results workspaces per family, so the aggregate outcome totals cannot
+        // stand in for them. The family is the level's profile executable key — kind included, not just
+        // level — so a Case execution can never stand in for a Procedure one (or vice versa).
+        var executableLevels = ladderPolicy.Definitions
+            .Where(x => x.VerificationProfile is not null)
+            .Select(x => x.Level)
+            .ToList();
+        var executionCounts = executableLevels.ToDictionary(
+            level => level,
+            level => executionRows.Count(x => x.ProcedureLevel == ToTestProcedureLevel(level)
+                && x.ArtifactKind == ladderPolicy.ExecutableArtifactKey(level).Kind));
+
+        var systemRequirements = levels.Count(x => x == RequirementLevel.System);
+        var highLevelRequirements = levels.Count(x => x == RequirementLevel.HighLevel);
+        var lowLevelRequirements = levels.Count(x => x == RequirementLevel.LowLevel);
+        var systemRequests = requests.Count(x => x.Type == ChangeRequestType.System);
+        // HLRCR and LLRCR are separate controlled families worked and reviewed separately, so the
+        // governed SoftwareLevel — not the aggregate Software type — decides which family a request
+        // belongs to and what the diagnostic reports. Both predicates require the Software type as well,
+        // matching the product's own family predicate: a misclassified System or Interface row carrying
+        // a stray SoftwareLevel must not pad a software family.
+        var highLevelChangeRequests = requests.Count(x => x.Type == ChangeRequestType.Software && x.SoftwareLevel == RequirementLevel.HighLevel);
+        var lowLevelChangeRequests = requests.Count(x => x.Type == ChangeRequestType.Software && x.SoftwareLevel == RequirementLevel.LowLevel);
+        var passes = outcomes.Count(x => x.Outcome == TestOutcome.Pass && x.RetestOfExecutionId == null);
+        var failures = outcomes.Count(x => x.Outcome == TestOutcome.Fail);
+        var retests = outcomes.Count(x => x.RetestOfExecutionId != null);
+        // The chain is correlated, not two independent totals: a failed execution only demonstrates the
+        // retest journey when a retest successor of that exact failure actually passed. The successor must
+        // also belong to the same controlled test artifact and must not precede its source — the
+        // record-execution path rejects a retest whose predecessor is a different procedure or that
+        // executed before the failure it references, so neither may count as a healed chain here.
+        var rowsByExecutionId = executionRows.ToDictionary(x => x.Id);
+        var healedFailures = outcomes.Count(x => x.Outcome == TestOutcome.Pass
+            && x.RetestOfExecutionId is { } sourceId
+            && rowsByExecutionId.TryGetValue(sourceId, out var failure)
+            && failure.Outcome == TestOutcome.Fail
+            && failure.ProcedureId == x.ProcedureId
+            && x.ExecutedAt >= failure.ExecutedAt);
+        // Each configured verification artifact family is its own user-visible workspace, so the
+        // aggregate artifact total cannot stand in for them: an upgraded database that keeps 500+
+        // artifacts overall but loses every HLR Case still has an empty family a user opens.
+
+        string Detail() =>
+            $"Families: SYSR {systemRequirements}, HLR {highLevelRequirements}, LLR {lowLevelRequirements}; "
+            + $"change requests: SRCR {systemRequests}, HLRCR {highLevelChangeRequests}, LLRCR {lowLevelChangeRequests}; "
+            + "verification artifacts: "
+            + string.Join(", ", configuredFamilies.Select(f =>
+                $"{f.Level}/{f.Key.Kind} {artifactCounts[(f.Level, f.Key.Kind)]}")) + "; "
+            + "executions per executable family: "
+            + string.Join(", ", executableLevels.Select(level =>
+                $"{level}/{ladderPolicy.ExecutableArtifactKey(level).Kind} {executionCounts[level]}"))
+            + $" ({passes} pass, {failures} fail, {retests} retest, {healedFailures} failure(s) healed by a passing retest); "            + "test change reviews: "
+            + string.Join(", ", configuredFamilies.Select(f => $"{f.Key.Discipline}/{f.Key.Kind} {reviewCounts[f.Key]}")) + "; "
+            + "downstream assessments: "
+            + string.Join(", ", assessmentTargets.Select(level => $"{level} {assessmentCounts[level]}")) + "; "
+            + "verification impact items: "
+            + string.Join(", ", configuredFamilies.Select(f => $"{f.Key.Discipline}/{f.Key.Kind} {impactCounts[f.Key]}")) + ". "
+            + "Deliberate exceptions: Interface change control is retired (#889); the product line, "
+            + "controlled library, release campaign and leadership positions are singular families. "
+            + "The enforced verification families are exactly the resolved ladder profile's configured "
+            + "bindings; enforcement follows that authority rather than the broader kinds listed on the "
+            + "authored ladder steps. Software-Procedure impact items are never raised (they attach to "
+            + "the originating Case review) and their review minimum applies only once the family carries "
+            + "authored provenance; migration-only families are reported, not enforced.";
+
+        var failures1 = new List<string>();
+        if (systemRequirements < 5) failures1.Add($"only {systemRequirements} System requirements");
+        if (highLevelRequirements < 5) failures1.Add($"only {highLevelRequirements} HLRs");
+        if (lowLevelRequirements < 5) failures1.Add($"only {lowLevelRequirements} LLRs");
+        if (systemRequests < 5) failures1.Add($"only {systemRequests} System change requests (SRCR)");
+        if (highLevelChangeRequests < 5) failures1.Add($"only {highLevelChangeRequests} HighLevel change requests (HLRCR)");
+        if (lowLevelChangeRequests < 5) failures1.Add($"only {lowLevelChangeRequests} LowLevel change requests (LLRCR)");
+        foreach (var family in configuredFamilies)
+        {
+            var artifactCount = artifactCounts[(family.Level, family.Key.Kind)];
+            if (artifactCount < 5)
+                failures1.Add($"only {artifactCount} {family.Level}/{family.Key.Kind} verification artifacts");
+            // Impact items are never raised against Procedure reviews — the service attaches them to the
+            // originating Case review — so software-Procedure keys carry no impact minimum. Their review
+            // minimum applies only once the family carries authored provenance (a procedure revision
+            // raised from a test change request); migration-only families (cutover-generated revisions)
+            // are reported, not enforced. Artifact and execution minimums always apply.
+            var isSoftwareProcedure = family.Key.Discipline != VerificationDiscipline.System
+                && family.Key.Kind == VerificationArtifactKind.Procedure;
+            if (isSoftwareProcedure)
+            {
+                var authored = procedureProvenance.Any(x =>
+                    x.Level == ToTestProcedureLevel(family.Level) && x.Authored);
+                var reviewCount = reviewCounts[family.Key];
+                if (authored && reviewCount < 5)
+                    failures1.Add($"only {reviewCount} {family.Key.Discipline}/{family.Key.Kind} test change reviews");
+                continue;
+            }
+            var reviewCount2 = reviewCounts[family.Key];
+            if (reviewCount2 < 5)
+                failures1.Add($"only {reviewCount2} {family.Key.Discipline}/{family.Key.Kind} test change reviews");
+            var impactCount = impactCounts[family.Key];
+            if (impactCount < 5)
+                failures1.Add($"only {impactCount} {family.Key.Discipline}/{family.Key.Kind} verification impact items");
+        }
+        foreach (var level in assessmentTargets)
+        {
+            if (assessmentCounts[level] < 5)
+                failures1.Add($"only {assessmentCounts[level]} {level} downstream change assessments");
+        }
+        foreach (var level in executableLevels)
+        {
+            if (executionCounts[level] < 5)
+                failures1.Add($"only {executionCounts[level]} {level} executions");
+        }
+        if (healedFailures < 1) failures1.Add("no failed execution with a passing same-artifact retest successor that does not precede it (pass/fail/retest chain broken)");
+        if (passes < 1) failures1.Add("no passing execution outside the retest chain (pass category empty)");
+        return failures1.Count > 0
+            ? new FamilyInventoryCheck(false, "Family inventory below the repeated-family minimum: "
+                + string.Join("; ", failures1) + ". " + Detail())
+            : new FamilyInventoryCheck(true, Detail());
     }
 
     /// <summary>

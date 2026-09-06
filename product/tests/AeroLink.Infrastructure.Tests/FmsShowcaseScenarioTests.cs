@@ -966,4 +966,165 @@ public sealed class FmsShowcaseScenarioTests(ShowcaseDatabaseFixture showcase)
         Assert.Contains("Accidental suspect coverage outside the named SYSTP-000040 scenario",
             drifted.Detail, StringComparison.Ordinal);
     }
+    /// The family inventory reports the whole cross-family matrix — including the deliberately singular
+    /// and retired families, with the reason in the detail — and holds the seed to the repeated-family
+    /// minimum. It must also bite: removing the retest leg breaks the pass/fail/retest chain and the
+    /// invariant names it instead of silently staying green.
+    /// </summary>
+    [Fact]
+    public async Task Family_inventory_invariant_reports_the_matrix_and_names_a_broken_pass_fail_retest_chain()
+    {
+        using var database = showcase.Create();
+        await using var db = database.Context();
+        var seeder = new FmsShowcaseSeeder(db);
+
+        var before = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var baseline = Assert.Single(before, x => x.Key == "family-inventory");
+        Assert.True(baseline.Holds, baseline.Detail);
+        Assert.Contains("SYSR 150", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("HLR 400", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("LLR 700", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("Interface change control is retired (#889)", baseline.Detail, StringComparison.Ordinal);
+        // Every configured family from the resolved ladder profile is enumerated with its own count —
+        // zeros included — so a family cannot vanish from the report by losing all of its rows.
+        Assert.Contains("System/Procedure 75", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("HighLevel/Case 160", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("LowLevel/Case 280", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("executions per executable family: System/Procedure", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("HighLevel/Case", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("LowLevel/Case", baseline.Detail, StringComparison.Ordinal);
+        Assert.Contains("enforced verification families are exactly the resolved ladder profile's configured bindings",
+            baseline.Detail, StringComparison.Ordinal);
+
+        var retests = await db.TestExecutions.Where(x => x.RetestOfExecutionId != null).ToListAsync();
+        Assert.NotEmpty(retests);
+        db.TestExecutions.RemoveRange(retests);
+        await db.SaveChangesAsync();
+
+        var after = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var drifted = Assert.Single(after, x => x.Key == "family-inventory");
+        Assert.False(drifted.Holds, drifted.Detail);
+        Assert.Contains("no failed execution with a passing same-artifact retest successor",
+            drifted.Detail, StringComparison.Ordinal);
+    }
+    /// HLRCR and LLRCR are separate controlled families, so reclassifying almost every LLRCR into the
+    /// HighLevel family — leaving the Software aggregate far above the minimum — must make the
+    /// inventory fail while naming the deficient LowLevel family explicitly.
+    /// </summary>
+    [Fact]
+    public async Task Family_inventory_names_a_deficient_change_request_family_below_the_aggregate()
+    {
+        using var database = showcase.Create();
+        await using var db = database.Context();
+        var seeder = new FmsShowcaseSeeder(db);
+
+        var lowLevelRequests = await db.SystemChangeRequests
+            .Where(x => x.ProjectId == showcase.Summary.ProjectId
+                && x.Type == ChangeRequestType.Software
+                && x.SoftwareLevel == RequirementLevel.LowLevel).ToListAsync();
+        Assert.True(lowLevelRequests.Count >= 5);
+        foreach (var request in lowLevelRequests.Skip(4))
+            db.Entry(request).Property(x => x.SoftwareLevel).CurrentValue = RequirementLevel.HighLevel;
+        await db.SaveChangesAsync();
+
+        var after = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var drifted = Assert.Single(after, x => x.Key == "family-inventory");
+        Assert.False(drifted.Holds, drifted.Detail);
+        Assert.Contains($"only 4 LowLevel change requests (LLRCR)", drifted.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("HighLevel change requests (HLRCR)", drifted.Detail, StringComparison.Ordinal);
+    }
+    /// The product exposes a separate Test Results workspace per executable family, so emptying one
+    /// family's executions — System here — must fail the inventory with that family named, even though
+    /// the other families still hold hundreds of executions and the aggregate volume stays high.
+    /// </summary>
+    [Fact]
+    public async Task Family_inventory_names_an_emptied_executable_results_family()
+    {
+        using var database = showcase.Create();
+        await using var db = database.Context();
+        var seeder = new FmsShowcaseSeeder(db);
+
+        var systemExecutions = await (from execution in db.TestExecutions
+            join revision in db.TestProcedureRevisions on execution.ProcedureRevisionId equals revision.Id
+            join procedure in db.TestProcedures on revision.ProcedureId equals procedure.Id
+            where procedure.Level == TestProcedureLevel.System
+            select execution).ToListAsync();
+        Assert.NotEmpty(systemExecutions);
+        db.TestExecutions.RemoveRange(systemExecutions);
+        await db.SaveChangesAsync();
+
+        var after = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var drifted = Assert.Single(after, x => x.Key == "family-inventory");
+        Assert.False(drifted.Holds, drifted.Detail);
+
+        Assert.Contains("only 0 System executions", drifted.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A configured artifact family emptied straight out of the database - the exact regression the
+    /// present-row grouping once hid - is still enumerated at zero and named, while the report keeps the
+    /// other families counts visible for the operator.
+    /// </summary>
+    [Fact]
+    public async Task Family_inventory_names_a_configured_artifact_family_emptied_from_the_database()
+    {
+        using var database = showcase.Create();
+        await using var db = database.Context();
+        var seeder = new FmsShowcaseSeeder(db);
+
+        /// Raw delete on purpose: this simulates an upgraded database that has lost the family rows,
+        /// not a controlled aggregate transition, so no domain lifecycle is involved.
+        await db.Database.OpenConnectionAsync();
+        await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = OFF;");
+        await db.Database.ExecuteSqlRawAsync("DELETE FROM test_procedures WHERE Level = 'HighLevel'");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys = ON;");
+
+        var after = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var drifted = Assert.Single(after, x => x.Key == "family-inventory");
+        Assert.False(drifted.Holds, drifted.Detail);
+        Assert.Contains("only 0 HighLevel/Case verification artifacts", drifted.Detail, StringComparison.Ordinal);
+        Assert.Contains("System/Procedure 75", drifted.Detail, StringComparison.Ordinal);
+        Assert.Contains("LowLevel/Case 280", drifted.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// <summary>
+    /// The migration-only exemption for software-Procedure keys: on a post-cutover profile (simulated
+    /// through the seeder's policy seam), those keys enter the configured matrix with zero authored
+    /// reviews; the artifact minimum bites immediately while the review/impact minima stay unenforced —
+    /// impact items never attach to Procedure reviews, and the review minimum resumes only with authored
+    /// provenance, which SQLite's neutral-identity CHECK cannot persist outside the PostgreSQL cutover.
+    /// </summary>
+    [Fact]
+    public async Task Family_inventory_treats_post_cutover_procedure_families_as_migration_only()
+    {
+        using var database = showcase.Create();
+        await using var db = database.Context();
+        var seeder = new FmsShowcaseSeeder(db);
+
+        var before = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        Assert.True(Assert.Single(before, x => x.Key == "family-inventory").Holds);
+
+        var configuration = await db.ProjectLadderConfigurations.AsNoTracking()
+            .Include(x => x.Steps).Include(x => x.AllowedUpstream)
+            .SingleAsync(x => x.ProjectId == showcase.Summary.ProjectId);
+        var resolved = ProjectLadderResolver.Resolve(configuration, LegacyLadderPolicy.Instance);
+        var fullProfileSteps = resolved.Steps.Select(x => x.Level
+                is RequirementLevel.HighLevel or RequirementLevel.LowLevel
+                    ? x with { EnabledArtifactKinds = [VerificationArtifactKind.Case, VerificationArtifactKind.Procedure] }
+                    : x).ToArray();
+        var fullProfile = new ResolvedProjectLadderPolicy(
+            resolved with { Steps = fullProfileSteps }, LegacyLadderPolicy.Instance);
+        seeder = new FmsShowcaseSeeder(db, new FixedProjectLadderPolicyResolver(fullProfile));
+
+        var after = await seeder.CheckInvariantsAsync(showcase.Summary.ProgramId);
+        var migratedInventory = Assert.Single(after, x => x.Key == "family-inventory");
+        Assert.False(migratedInventory.Holds, migratedInventory.Detail);
+        Assert.Contains("only 0 HighLevel/Procedure verification artifacts",
+            migratedInventory.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("HighLevelSoftware/Procedure test change reviews",
+            migratedInventory.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("HighLevelSoftware/Procedure verification impact items",
+            migratedInventory.Detail, StringComparison.Ordinal);
+    }
 }
