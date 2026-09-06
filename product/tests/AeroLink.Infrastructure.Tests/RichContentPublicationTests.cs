@@ -194,6 +194,53 @@ public sealed class RichContentPublicationTests
     }
 
     [Fact]
+    public void A_single_decompressed_byte_beyond_the_declared_scanlines_is_refused()
+    {
+        // #849 Finding 3's exact boundary: the decoder reads only the four bytes the 1x1 IHDR permits and
+        // then reads one more byte. A single byte of decompressed excess — far too small to trip the
+        // megabyte bomb above — must refuse the image at that check.
+        var oneByteOver = Png(1, 1, [0, 255, 0, 0, 0]);
+        Assert.False(PngImage.IsPng(oneByteOver));
+        Assert.False(PngImage.TryDecodeRgb(oneByteOver, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Declared_scanlines_that_decompress_short_are_refused()
+    {
+        // IHDR declares 2x2 (eight filtered bytes) but the compressed stream yields only the first
+        // scanline. The exact-sized buffer can never fill, so the image is refused rather than decoded
+        // with rows missing.
+        var shortScanlines = Png(2, 2, [0, 255, 0, 0, 0, 255, 0]);
+        Assert.False(PngImage.IsPng(shortScanlines));
+        Assert.False(PngImage.TryDecodeRgb(shortScanlines, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Dimensions_over_the_decoded_pixel_ceiling_are_refused_before_allocation()
+    {
+        // The ceiling check runs while parsing IHDR, before a single pixel buffer exists: a declaration of
+        // 10,000,772 pixels (just over the ten-million limit) with a trivially small payload is refused
+        // without ever allocating the scanline or RGB buffers the declaration would imply.
+        var justOver = Png(4_096, 2_442, []);
+        Assert.False(PngImage.IsPng(justOver));
+        Assert.False(PngImage.TryDecodeRgb(justOver, out _, out _, out _));
+    }
+
+    [Fact]
+    public void An_image_at_the_decoded_pixel_ceiling_still_decodes()
+    {
+        // The boundary is inclusive for honest artifacts: 32,768 x 305 is exactly under the ten-million-
+        // pixel limit on both per-side and total caps, and decodes completely.
+        const int width = 32_768;
+        const int height = 305;
+        var raw = new byte[(3 * width + 1) * height]; // per row: one filter byte (0) plus the RGB pixels
+        Assert.True(PngImage.TryDecodeRgb(Png(width, height, raw), out var decodedWidth, out var decodedHeight, out var rgb));
+        Assert.Equal(width, decodedWidth);
+        Assert.Equal(height, decodedHeight);
+        Assert.Equal((long)width * height * 3, rgb.Length);
+    }
+
+    [Fact]
     public void An_authored_image_reaches_the_document_as_its_bytes()
     {
         var id = Guid.NewGuid();
