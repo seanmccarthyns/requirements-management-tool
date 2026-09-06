@@ -35,7 +35,15 @@ test('The sign-in story panel gives truthful workspace context without changing 
   await page.goto('/')
   await expect(page.locator('.loginBrand')).toContainText('AeroLink')
   await expect(page.locator('.loginStoryContext')).toContainText('CONTROLLED ENGINEERING WORKSPACE')
-  await expect(page.locator('.loginStoryContext')).toContainText('Requirements, change, verification, and evidence')
+  // The owner-mandated sign-in headline (#925 P1), singular "Document" and all.
+  await expect(page.locator('.loginStoryContext h1')).toHaveText(
+    'Requirements, Verification, Changes, Evidence, Document, and more in one connected record')
+  // The explanatory paragraph and the access statement were removed by the same owner direction.
+  await expect(page.locator('.loginStoryContext')).not.toContainText('Sign in to reach the programs')
+  await expect(page.locator('.loginStoryContext')).not.toContainText('PROJECT ACCESS IS ENFORCED')
+  if (process.env.AEROLINK_C6_EVIDENCE) {
+    await page.screenshot({ path: `${process.env.AEROLINK_C6_EVIDENCE}/signin-after.png`, fullPage: false })
+  }
   await expect(page.locator('.loginStoryEndpoint')).toContainText(new URL(page.url()).origin)
   await expect(page.getByLabel('Username')).toBeVisible()
   await expect(page.getByLabel('Password')).toBeVisible()

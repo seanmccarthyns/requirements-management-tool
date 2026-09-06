@@ -12,6 +12,7 @@ import {
   recordClientOperationFailure,
 } from "./apiClient";
 import "./IdentitySetup.css";
+import { Icon } from "./icons";
 import { PersonAvatar } from "./People";
 
 export type AuthUser = {
@@ -270,7 +271,10 @@ export function LoginPage({
     <main className="loginPage">
       <section className="loginStory">
         <div className="loginBrand">
-          <span aria-hidden="true">▲</span>AeroLink
+          <span aria-hidden="true" className="loginBrandMark">
+            <Icon name="brandMark" />
+          </span>
+          AeroLink
         </div>
         {setup && !setup.bootstrapRequired && (
           <>
@@ -279,17 +283,9 @@ export function LoginPage({
                 CONTROLLED ENGINEERING WORKSPACE
               </p>
               <h1>
-                Requirements, change, verification, and evidence in one
-                connected record.
+                Requirements, Verification, Changes, Evidence, Document, and
+                more in one connected record
               </h1>
-              <p className="loginStoryBody">
-                Sign in to reach the programs you are authorized for. Review
-                decisions and verification evidence stay attributable to their
-                approved revisions.
-              </p>
-              <div className="loginStoryTrust">
-                <span>PROJECT ACCESS IS ENFORCED</span>
-              </div>
             </div>
             <div className="loginStoryEndpoint">
               <div>
@@ -365,7 +361,10 @@ export function RequiredPasswordChange({
     <main className="loginPage">
       <section className="loginStory">
         <div className="loginBrand">
-          <span>▲</span>AeroLink
+          <span aria-hidden="true" className="loginBrandMark">
+            <Icon name="brandMark" />
+          </span>
+          AeroLink
         </div>
         <div>
           <p className="eyebrow">CONTROLLED IDENTITY · REQUIRED ACTION</p>
@@ -900,26 +899,29 @@ export function MyWorkCenter({
       </header>
       {data && (
         <>
-          <section className="workMetrics">
-            {[
-              ["Assigned to me", data.summary.total],
-              ["Awaiting signature", data.summary.approvals],
-              ["Overdue", data.summary.overdue],
-              ["Drafts I own", data.summary.drafts],
-            ].map(([x, n], i) => (
-              <article
-                className={i === 2 && Number(n) > 0 ? "urgent" : ""}
-                key={String(x)}
-              >
-                <span>{x}</span>
-                <b>{n}</b>
-                <small>
-                  {i === 2
-                    ? "Requires immediate attention"
-                    : "Current program scope"}
-                </small>
-              </article>
-            ))}
+          {/* The scope is a fact about all four metrics at once, so it is stated once (#925 P3) — as a
+              leading cell of the same row, so stating it costs no extra vertical space and the work
+              queue below moves up by the full card compaction. The overdue card keeps its own urgent
+              note because it says something the scope line does not. */}
+          <section className="workMetrics" aria-label="My Work metrics — current program scope">
+            <div className="workMetricsGrid">
+              <p className="workMetricsScope">Current program scope</p>
+              {[
+                ["Assigned to me", data.summary.total],
+                ["Awaiting signature", data.summary.approvals],
+                ["Overdue", data.summary.overdue],
+                ["Drafts I own", data.summary.drafts],
+              ].map(([x, n], i) => (
+                <article
+                  className={i === 2 && Number(n) > 0 ? "urgent" : ""}
+                  key={String(x)}
+                >
+                  <span>{x}</span>
+                  <b>{n}</b>
+                  {i === 2 && <small>Requires immediate attention</small>}
+                </article>
+              ))}
+            </div>
           </section>
           <section className="workQueue">
             <div className="queueTitle">

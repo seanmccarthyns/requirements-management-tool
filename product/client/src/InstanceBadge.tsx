@@ -65,6 +65,22 @@ export default function InstanceBadge() {
   const snapshot = identity.instance?.snapshot ?? null;
   const age = snapshotAge(snapshot?.createdAtUtc);
 
+  // Routine surfaces name the installation, not its deployment classification. The owner asked for one
+  // specific thing (#925 P2): the declared HOME CANONICAL label reads as the plain installation name it
+  // identifies. That is handled by the single explicit rule below — same declared label, same declared
+  // classification, spaced or not — because a general suffix-stripping algorithm guesses at other
+  // operators' labels and can erase meaningful distinctions like a Demo declaration. Every label the
+  // rule does not name is shown verbatim, and the tooltip keeps the whole declared label,
+  // classification, source, database, mode and snapshot facts, so nothing is reclassified, renamed, or
+  // inferred — the badge just stops shouting the operator word.
+  const plainLabelRules: ReadonlyArray<{ declaredLabel: string; classification: string; plain: string }> = [
+    { declaredLabel: "HOME CANONICAL", classification: "HomeCanonical", plain: "HOME" },
+  ];
+  const normalize = (value: string) => value.replace(/\s+/gu, " ").trim().toUpperCase();
+  const matched = plainLabelRules.find(rule =>
+    rule.classification === classification.trim() && normalize(rule.declaredLabel) === normalize(label));
+  const visibleLabel = matched ? matched.plain : label;
+
   const detail = [
     `Instance: ${label} (${classification})`,
     identity.database?.name ? `Database: ${identity.database.name}` : undefined,
@@ -80,7 +96,7 @@ export default function InstanceBadge() {
       data-testid="instance-badge"
       data-classification={classification}
     >
-      {label}
+      {visibleLabel}
       {snapshot ? <em className="instanceBadgeSnapshot">snapshot{age ? ` ${age}` : ""}</em> : null}
     </span>
   );
